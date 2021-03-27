@@ -125,7 +125,6 @@ exports.seq = seq;
 (async () => {
   const url = await gateway();
   await establish(() => new WebSocket(url), {
-    token: 'NzUyNjM4NTMxOTcyODkwNzI2.X1ajQQ.XAYGetHdZhhrve_sY37LEYkuRIE',
     intents: (1 << 10) | (1 << 9),
   });
 })();*/
