@@ -75,15 +75,18 @@ class Fundisc extends Map {
 
     sendable.on('message', handle);
     sendable.on('ready', handle);
-    sendable.on('close', this.listen(...args).catch(error => console.error(error)));
+    sendable.on('close', () => this.listen(...args).catch(error => {
+      console.error(error);
+      process.exit(1);
+    }));
 
     return sendable;
   };
 }
 
-const seq = handle => req => handle(req.payload.op === 1 ? req.payload.d : req.payload.seq);
+const seqReceived = handle => req => handle(req.payload.op === 1 ? req.payload.d : req.payload.seq);
 
-const heartbeat = getSeq => {
+const heartbeat = ({seq, onError}) => {
   const cache = {acked: true, interval: undefined};
 
   return (req, res, next) => {
@@ -93,32 +96,29 @@ const heartbeat = getSeq => {
     }
 
     if (req.payload.op === 10 && !cache.interval) {
-      console.log('setting interval');
       cache.interval = setInterval(async () => {
         try {
           if (cache.acked) {
-            const d = await getSeq();
-            res.send({op: 1, d: await getSeq()});
+            res.send({op: 1, d: await seq()});
             cache.acked = false;
           } else {
             throw new Error('ACK not received. Connection considered dead');
           }
         } catch (error) {
-          res.sendable.close(1011);
+          res.sendable.close?.(1011);
           clearInterval(cache.interval);
           cache.interval = undefined;
           cache.acked = true;
-          console.error('could not send heartbeat');
-          console.error(error);
+          onError ? onError(error) : console.error(error);
         }
       }, req.payload.d.heartbeat_interval);
     }
 
     return next();
   }; 
-}
+};
 
 exports.gateway = gateway;
 exports.fundisc = () => new Fundisc();
-exports.seq = seq;
+exports.seqReceived = seqReceived;
 exports.heartbeat = heartbeat;

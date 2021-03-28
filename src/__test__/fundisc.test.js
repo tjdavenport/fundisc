@@ -1,8 +1,15 @@
 /**
  * @jest-environment node
  */
-const {fundisc, seq, heartbeat} = require('../fundisc');
 const EventEmitter = require('eventemitter2');
+const {fundisc, seqReceived, heartbeat} = require('../fundisc');
+
+class MockWs extends EventEmitter {
+  constructor(args) {
+    super(args);
+  }
+  send = payload => this.emit('sent', JSON.parse(payload));
+}
 
 describe('fundisc', () => {
   it('connects middleware', async () => {
@@ -18,7 +25,7 @@ describe('fundisc', () => {
             setTimeout(() => {
               foo.push('baz');
               resolve()
-            }, 50);
+            }, 25);
           })
           .use(() => foo.push('bar'))
           .catch(catcher)
@@ -26,7 +33,7 @@ describe('fundisc', () => {
             throw new Error('oh noes');
           })
           .use(() => foo.push('intercepted'))
-          .listen(() => new EventEmitter())
+          .listen(() => new MockWs())
           .then(sendable => sendable.emit('message', '{"foo": "bar"}'));
       } catch (error) {
         reject(error);
@@ -38,13 +45,13 @@ describe('fundisc', () => {
         fundisc()
           .use((req, res) => {
             foo.push('fizz');
-            setTimeout(() => resolve(), 50);
+            setTimeout(() => resolve(), 25);
             return res.end();
           }, () => {
             foo.push('buzz');
           })
           .use(() => foo.push('lorem'))
-          .listen(() => new EventEmitter())
+          .listen(() => new MockWs())
           .then(sendable => sendable.emit('message', '{"foo": "bar"}'));
       } catch (error) {
         reject(error);
@@ -65,34 +72,38 @@ describe('fundisc', () => {
     await fundisc()
       .use(() => [
         () => expect(seqs.length).toBeFalsy(),
-        () => expect(seq.length).toBeTruthy()
+        () => expect(seqs.length).toBeTruthy()
       ][seqs.length]())
-      .use(seq(async seq => new Promise(resolve => setTimeout(() => {
+      .use(seqReceived(async seq => new Promise(resolve => setTimeout(() => {
         seqs.push(seq)
         resolve();
-      }, 50))))
+      }, 25))))
       .use(() => [
         () => expect(seqs[0]).toEqual(5),
         () => expect(seqs[1]).toEqual(6),
       ][seqs.length - 1]())
-      .listen(() => new EventEmitter())
+      .listen(() => new MockWs())
       .then(async sendable => {
         await sendable.emitAsync('message', JSON.stringify({op: 1, d: 5}));
         await sendable.emitAsync('message', JSON.stringify({op: 999, seq: 6}));
       });
   });
 
-  /*it.only('offers middleware for handling heart beats', async () => {
-    await new Promise((resolve, reject) => {
-      console.log('dsklfjskldfjdslkj');
-      fundisc()
-        .use(heartbeat(() => 5))
-        .listen(() => new EventEmitter())
-        .then(async sendable => {
-          await sendable.emitAsync('message', JSON.stringify({op: 10, d: {heartbeat_interval: 100}}));
-          reject();
-        });
+  it('offers middleware for handling heart beats', async () => {
+    let seq = 0;
 
-    })
-  });*/
+    await new Promise((resolve, reject) => {
+      fundisc()
+        .use(heartbeat({seq: () => seq++, onError: () => resolve()}))
+        .catch(error => catcher(error))
+        .listen(() => new MockWs())
+        .then(sendable => new Promise((resolve, reject) => {
+          sendable.on('sent', payload => {
+            (payload.op === 1) && sendable.emitAsync('message', JSON.stringify({op: 11}))
+              .then(() => expect(seq).toEqual(1));
+          });
+          sendable.emitAsync('message', JSON.stringify({op: 10, d: {heartbeat_interval: 25}}));
+        }));
+    });
+  });
 });
