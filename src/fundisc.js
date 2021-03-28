@@ -7,29 +7,41 @@ const gateway = async (api = 'https://discord.com/api') => {
   return `${url}?${new URLSearchParams({v: 8, encoding: 'json'})}`;
 };
 
-const req = payload => Object.assign(function() {}, {
-  payload: JSON.parse(payload)
-});
+class Res extends Map {
+  constructor(sendable) {
+    super();
+    this.sendable = sendable;
+  }
 
-const ended = Symbol('ended');
-const res = (req, sendable) => Object.assign(function() {}, {
-  end() {
-    return ended;
-  },
-  req, sendable
-});
+  static ended = Symbol('ended');
 
-const fundisc = () => Object.assign(function() {}, {
-  use(...middlewares) {
+  send = payload => this.sendable.send(JSON.stringify(payload));
+  end = () => Res.ended;
+}
+
+class Req extends Map {
+  constructor(payload) {
+    super();
+    this.payload = JSON.parse(payload);
+  }
+}
+
+class Fundisc extends Map {
+  constructor(...args) {
+    super(...args);
+    this.stack = [];
+    this.sink = undefined;
+  }
+  use = (...middlewares) => {
     this.stack.push(middlewares);
     return this;
-  },
-  catch(...middlewares) {
+  };
+  catch = (...middlewares) => {
     !this.sink && (this.sink = []);
     this.sink.push(middlewares);
     return this;
-  },
-  async connect(reqres, middlewares, error) {
+  };
+  connect = async (reqres, middlewares, error) => {
     for (const middleware of middlewares) {
       if (await new Promise((resolve, reject) => {
         const args = [...reqres, thrown => thrown ? reject(thrown) : resolve()];
@@ -38,93 +50,75 @@ const fundisc = () => Object.assign(function() {}, {
 
         return Promise.resolve(middleware(...args))
           .then(out => resolve(out)).catch(error => reject(error)) || resolve()
-      }) === ended) {
-        return ended;
+      }) === Res.ended) {
+        return Res.ended;
       }
     }
-  },
-  async handle(payload, sendable) {
-    const reqres = [req(payload), res(req, sendable)];
+  };
+  handle = async (payload, sendable) => {
+    const reqres = [new Req(payload), new Res(sendable)];
 
     try {
       for (const middlewares of this.stack) {
-        if (await this.connect(reqres, middlewares) === ended) return;
+        if (await this.connect(reqres, middlewares) === Res.ended) return;
       }
     } catch (error) {
       for (const middlewares of (this.sink || [[() => console.error(error)]])) {
-        if (await this.connect(reqres, middlewares, error) === ended) return;
+        if (await this.connect(reqres, middlewares, error) === Res.ended) return;
       }
     }
-  },
-  async listen(...args) {
+  };
+  listen = async (...args) => {
     const sendable = args[0] ? await args[0]() : await gateway()
       .then(url => new WebSocket(url));
     const handle = payload => this.handle(payload, sendable);
 
     sendable.on('message', handle);
     sendable.on('ready', handle);
+    sendable.on('close', this.listen(...args).catch(error => console.error(error)));
 
     return sendable;
-  },
-}, {
-  stack: [],
-  sink: undefined
-});
+  };
+}
 
 const seq = handle => req => handle(req.payload.op === 1 ? req.payload.d : req.payload.seq);
 
-exports.gateway = gateway;
-exports.fundisc = fundisc;
-exports.seq = seq;
+const heartbeat = getSeq => {
+  const cache = {acked: true, interval: undefined};
 
-
-/*const establish = async (sendable, options = {}) => {
-  const cache = {seq: null, acked: true};
-  const send = payload => sendable.send(JSON.stringify(payload));
-
-  const handle = handler => payload => {
-    const {op, d, s, t} = JSON.parse(payload);
-    s && cache.seq = s;
-    return handler(op, s, d, t);
-  };
-
-  const ops = {
-    '1': seq => {
-      cache.seq = seq;
-    },
-    '10': ({heartbeat_interval}) => {
-      const beat = setInterval(() => {
-        //!cache.acked && ();
-        cache.acked && (cache.acked = false);
-        send({op: 1, d: cache.seq});
-      }, heartbeat_interval);
-      send({op: 2, d: identify});
-    },
-    '11': () => {
+  return (req, res, next) => {
+    if (req.payload.op === 11) {
       cache.acked = true;
+      return next();
     }
-  };
 
-  sendable.on('error', payload => {
-    console.log(payload);
-  });
+    if (req.payload.op === 10 && !cache.interval) {
+      console.log('setting interval');
+      cache.interval = setInterval(async () => {
+        try {
+          if (cache.acked) {
+            const d = await getSeq();
+            res.send({op: 1, d: await getSeq()});
+            cache.acked = false;
+          } else {
+            throw new Error('ACK not received. Connection considered dead');
+          }
+        } catch (error) {
+          res.sendable.close(1011);
+          clearInterval(cache.interval);
+          cache.interval = undefined;
+          cache.acked = true;
+          console.error('could not send heartbeat');
+          console.error(error);
+        }
+      }, req.payload.d.heartbeat_interval);
+    }
 
-  sendable.on('ready', payload => {
-    console.log(payload);
-  });
+    return next();
+  }; 
+}
 
-  sendable.on('message', payload => {
-    console.log(payload);
-    const {op, d, s} = JSON.parse(payload);
-    !ops[String(op)] && return console.warn(`unsupported op ${op} received`);
-    ops[String(op)](d);
-  });
-};
-
-
-(async () => {
-  const url = await gateway();
-  await establish(() => new WebSocket(url), {
-    intents: (1 << 10) | (1 << 9),
-  });
-})();*/
+exports.gateway = gateway;
+exports.fundisc = () => new Fundisc();
+exports.seq = seq;
+exports.heartbeat = heartbeat;

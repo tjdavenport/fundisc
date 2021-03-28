@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  */
-const {fundisc, seq} = require('../fundisc');
+const {fundisc, seq, heartbeat} = require('../fundisc');
 const EventEmitter = require('eventemitter2');
 
 describe('fundisc', () => {
@@ -81,4 +81,18 @@ describe('fundisc', () => {
         await sendable.emitAsync('message', JSON.stringify({op: 999, seq: 6}));
       });
   });
+
+  /*it.only('offers middleware for handling heart beats', async () => {
+    await new Promise((resolve, reject) => {
+      console.log('dsklfjskldfjdslkj');
+      fundisc()
+        .use(heartbeat(() => 5))
+        .listen(() => new EventEmitter())
+        .then(async sendable => {
+          await sendable.emitAsync('message', JSON.stringify({op: 10, d: {heartbeat_interval: 100}}));
+          reject();
+        });
+
+    })
+  });*/
 });
